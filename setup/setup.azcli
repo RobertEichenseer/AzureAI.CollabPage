@@ -1,0 +1,251 @@
+# Check if you are already logged in
+$loggedIn = az account show --query "name" -o tsv
+
+if ($loggedIn -ne $null) {
+    Write-Host "Already logged in as $loggedIn"
+} else {
+    Write-Host "Logging in..."
+    az login
+}
+
+# Retrieve default subscription id
+$subscriptionId = (
+    (
+        az account list -o json `
+            --query "[?isDefault]"
+    ) | ConvertFrom-Json
+).id
+
+# Set Subscription
+az account set --subscription $subscriptionId
+Write-Host "Subscription set to $subscriptionId"
+
+# Define Project Unifier
+$random = Get-Random -Minimum 100 -Maximum 999
+
+Write-Host "Unifier set to: $random"
+
+# Create Resource Group
+$resourceGroup = "CXP.AI.OrleansAgents"
+$location = "swedencentral"
+
+az group create `
+    --location $location `
+    --resource-group $resourceGroup
+
+
+# Create Azure OpenAI Account
+$csOpenAIName = "OA_AOAI_$random"
+
+az cognitiveservices account create `
+    --name $csOpenAIName `
+    --resource-group $resourceGroup `
+    --location $location `
+    --kind OpenAI `
+    --sku S0 `
+    --yes
+
+$csOpenAIId = ( `
+    az cognitiveservices account show `
+        --name $csOpenAIName `
+        --resource-group $resourceGroup `
+        --query id `
+        --output tsv `
+)
+
+$csOpenAIEndpoint = ( `
+    az cognitiveservices account show `
+        --name $csOpenAIName `
+        --resource-group $resourceGroup `
+        --query properties.endpoint `
+        --output tsv `
+)
+
+$csOpenAIApiKey = (
+    az cognitiveservices account keys list `
+        --name $csOpenAIName `
+        --resource-group $resourceGroup `
+        --query key1 `
+        --output tsv `
+)
+
+# Chat Completion Model
+$modelChatCompletionDeploymentName = "gpt-4o"
+$modelName = "gpt-4o"
+$modelVersion = "2024-05-13"
+$modelFormat = "OpenAI"
+$scaleType = "Standard"
+
+az cognitiveservices account deployment create `
+   --resource-group $resourceGroup `
+   --name $csOpenAIName `
+   --deployment-name $modelChatCompletionDeploymentName `
+   --model-name $modelName `
+   --model-version $modelVersion `
+   --model-format $modelFormat `
+   --sku-name $scaleType `
+   --sku-capacity 1
+
+# Embedding Model 
+$modelEmbeddingDeploymentName = "ada-002"
+$modelName = "text-embedding-ada-002"
+$modelVersion = "2"
+
+az cognitiveservices account deployment create `
+   --resource-group $resourceGroup `
+   --name $csOpenAIName `
+   --deployment-name $modelEmbeddingDeploymentName `
+   --model-name $modelName `
+   --model-version $modelVersion `
+   --model-format $modelFormat `
+   --sku-name $scaleType `
+   --sku-capacity 1
+
+
+# Create Storage Account
+$stgName = "agentstate$random"
+$stgSku = "Standard_LRS"
+
+az storage account create `
+    --name $stgName `
+    --resource-group $resourceGroup `
+    --location $location `
+    --sku $stgSku `
+    --kind StorageV2 `
+    --https-only true `
+    --access-tier Hot
+
+$stgConnectionString = ( `
+    az storage account show-connection-string `
+        --name $stgName `
+        --resource-group $resourceGroup `
+        --query connectionString `
+        --output tsv `
+)
+
+$stgResourceId = ( `
+    az storage account show `
+        --name $stgName `
+        --resource-group $resourceGroup `
+        --query id `
+        --output tsv `
+)
+
+# create storage container
+$stgContainerName = "collabpage"
+
+az storage container create `
+    --name $stgContainerName `
+    --account-name $stgName
+
+# Create Service Bus namespace
+$sbName = "pageevent$random"
+$sbSku = "Standard"
+
+az servicebus namespace create `
+    --name $sbName `
+    --resource-group $resourceGroup `
+    --sku $sbSku
+
+$sbConnectionString = ( `
+    az servicebus namespace authorization-rule keys list `
+        --name RootManageSharedAccessKey `
+        --namespace-name $sbName `
+        --resource-group $resourceGroup `
+        --query primaryConnectionString `
+        --output tsv `
+)
+
+# Create Service Bus Topic
+$sbTopicName = "pageeventtopic"
+
+az servicebus topic create `
+    --name $sbTopicName `
+    --namespace-name $sbName `
+    --resource-group $resourceGroup
+
+$sbTopicResourceId = ( `
+    az servicebus topic show `
+        --name $sbTopicName `
+        --namespace-name $sbName `
+        --resource-group $resourceGroup `
+        --query id `
+        --output tsv `
+)   
+
+# Create Service Bus Subscription
+$sbSubscriptionName = "pageeventsubscription"
+
+az servicebus topic subscription create `
+    --name $sbSubscriptionName `
+    --namespace-name $sbName `
+    --resource-group $resourceGroup `
+    --topic-name $sbTopicName
+
+$sbSubscriptionNameHuman = "pageeventsubscriptionhuman"
+
+az servicebus topic subscription create `
+    --name $sbSubscriptionNameHuman `
+    --namespace-name $sbName `
+    --resource-group $resourceGroup `
+    --topic-name $sbTopicName
+
+# Create Event Grid System Topic
+$egTopicName = "pageeventgridtopic$random"
+$egTopicSchema = "cloudeventschemav1_0"
+$egTopicType = "Microsoft.Storage.StorageAccounts"
+
+az eventgrid system-topic create `
+    --name $egTopicName `
+    --resource-group $resourceGroup `
+    --location $location `
+    --source $stgResourceId `
+    --topic-type $egTopicType  
+
+$egTopicResourceId = (
+    az eventgrid system-topic show `
+        --name $egTopicName `
+        --resource-group $resourceGroup `
+        --query id `
+        --output tsv `
+)
+
+# Create Event Grid Subscription
+$egSubscriptionName = "pageeventgridsubscription"
+
+az eventgrid event-subscription create `
+    --name $egSubscriptionName `
+    --endpoint-type servicebusqueue `
+    --endpoint $sbTopicResourceId `
+    --source-resource-id $egTopicResourceId
+
+# Agent Response File Format
+$agentResponseFormat = "{@AgentName}_{@GUID}.txt"
+
+# Store configuration 
+$configurationFile = "./configuration/application.env"
+New-Item -Name $configurationFile -ItemType File -Force
+
+function Set-ConfigurationFileVariable($configurationFile, $variableName, $variableValue) {
+    if (Select-String -Path $configurationFile -Pattern $variableName) {
+        (Get-Content $configurationFile) | Foreach-Object {
+            $_ -replace "$variableName = .*", "$variableName = $variableValue"
+        } | Set-Content $configurationFile
+    } else {
+        Add-Content -Path $configurationFile -value "$variableName = $variableValue"
+    }
+}
+
+Set-ConfigurationFileVariable $configurationFile "OA_AOAI_APIKEY" $csOpenAIApiKey
+Set-ConfigurationFileVariable $configurationFile "OA_AOAI_ENDPOINT" $csOpenAIEndpoint
+Set-ConfigurationFileVariable $configurationFile "OA_CHATCOMPLETION_DEPLOYMENTNAME" $modelChatCompletionDeploymentName
+Set-ConfigurationFileVariable $configurationFile "OA_EMBEDDING_DEPLOYMENTNAME" $modelEmbeddingDeploymentName
+Set-ConfigurationFileVariable $configurationFile "OA_STORAGE_CONNECTIONSTRING" $stgConnectionString
+Set-ConfigurationFileVariable $configurationFile "OA_STORAGE_COLLABPAGECONTAINER" $stgContainerName
+Set-ConfigurationFileVariable $configurationFile "OA_SERVICEBUS_CONNECTIONSTRING" $sbConnectionString
+Set-ConfigurationFileVariable $configurationFile "OA_SERVICEBUS_SUBSCRIPTION" $sbSubscriptionName
+Set-ConfigurationFileVariable $configurationFile "OA_SERVICEBUS_SUBSCRIPTIONHUMAN" $sbSubscriptionNameHuman
+Set-ConfigurationFileVariable $configurationFile "OA_SERVICEBUS_TOPIC" $sbTopicName
+Set-ConfigurationFileVariable $configurationFile "OA_AGENT_RESPONSEFORMAT" $agentResponseFormat
+
+Write-Host "Configuration file created at: $configurationFile"

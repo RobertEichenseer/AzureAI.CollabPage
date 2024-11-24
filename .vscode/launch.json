@@ -1,0 +1,36 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "AgentRuntime",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build_agentruntim",
+            "program": "${workspaceFolder}/src/AgentRuntime/bin/Debug/net8.0/AgentRuntime.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}/src/AgentRuntime",
+            "console": "internalConsole",
+            "stopAtEntry": false
+        },
+        {
+            "name": "HumanInterface",
+            "type": "coreclr",
+            "request": "launch",
+            "preLaunchTask": "build_humaninterface",
+            "program": "${workspaceFolder}/src/HumanInterface/bin/Debug/net8.0/HumanInterface.dll",
+            "args": [],
+            "cwd": "${workspaceFolder}/src/HumanInterface",
+            "console": "integratedTerminal",
+            "stopAtEntry": false, 
+        },        
+    ],
+    "compounds": [
+        {
+            "name": "System: AgentRuntime + HumanInterface",
+            "configurations": [
+                "AgentRuntime",
+                "HumanInterface"
+            ]
+        }
+    ]
+}
